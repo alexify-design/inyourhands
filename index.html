@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>In Your Hands Tracker</title>
+<style>
+  :root{--bg:#000;--fg:#f2f2f2;--dim:#8a8a8a;--line:#2a2a2a;--accent:#ffd84d;--ok:#4cd98a;--bad:#ff6b6b;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none}
+  #stage{position:fixed;inset:0;overflow:hidden;background:#000}
+  video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  video.mirror,#overlay.mirror{transform:scaleX(-1)}
+  #bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 12px 10px;background:linear-gradient(#000c,#0000)}
+  #bar h1{font-size:15px;margin:0 auto 0 0;letter-spacing:.02em}
+  button{font:inherit;color:var(--fg);background:#1d1d1d;border:1px solid #3a3a3a;border-radius:10px;padding:9px 12px;cursor:pointer}
+  button.primary{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+  button:active{transform:scale(.97)}
+  .pill{font-size:12px;padding:4px 9px;border-radius:99px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+  .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.bad{color:var(--bad);border-color:var(--bad)}
+  #panel{position:fixed;left:0;right:0;bottom:0;max-height:62%;overflow:auto;padding:12px 14px calc(14px + env(safe-area-inset-bottom));background:#000d;border-top:1px solid var(--line);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+  #panel.hidden{display:none}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+  .row label{color:var(--dim);font-size:13px}
+  select{font:inherit;color:var(--fg);background:#1d1d1d;border:1px solid #3a3a3a;border-radius:10px;padding:8px}
+  .axes{display:grid;grid-template-columns:52px 1fr 70px 46px;gap:6px 10px;align-items:center;margin-top:8px}
+  .axes .n{font-weight:600;font-size:13px}
+  .meter{height:10px;background:#1a1a1a;border-radius:5px;position:relative;overflow:hidden}
+  .meter i{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#444}
+  .meter b{position:absolute;top:0;bottom:0;background:var(--accent);border-radius:5px}
+  input[type=range]{width:70px;accent-color:var(--accent)}
+  .inv{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:3px}
+  #msg{font-size:13px;color:var(--dim);margin-top:6px;min-height:18px}
+  #exhibit{position:fixed;inset:0;background:#000;display:none;align-items:flex-end;justify-content:center;padding-bottom:30px}
+  #exhibit.on{display:flex}
+  #exhibit span{width:8px;height:8px;border-radius:50%;background:#222}
+  #exhibit span.hand{background:#3a3a3a}
+  #exhibit span.lost{background:#5a1f1f}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="bar">
+  <h1>In Your Hands</h1>
+  <span id="trk" class="pill">camera off</span>
+  <span id="bt" class="pill">plane: not connected</span>
+</div>
+
+<div id="panel">
+  <div class="row">
+    <button id="btnStart" class="primary">1 · Start camera</button>
+    <button id="btnConnect">2 · Connect plane</button>
+    <button id="btnNeutral">3 · Set neutral</button>
+  </div>
+  <div class="row">
+    <label>Camera</label>
+    <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
+    <label>Placement</label>
+    <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
+    <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
+  </div>
+  <div class="axes" id="axes"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnExhibit">Exhibit mode (black screen)</button>
+    <button id="btnHide">Hide panel</button>
+  </div>
+  <div id="msg">Tap “Start camera”, hold your hand flat in view, then “Connect plane”.</div>
+</div>
+
+<div id="exhibit"><span id="dot"></span></div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ---------- constants shared with the ESP32 sketch ----------
+const SVC = "a1e50001-5c4a-4b8e-9f2d-1a2b3c4d5e6f";
+const CHR = "a1e50002-5c4a-4b8e-9f2d-1a2b3c4d5e6f";
+const AXES = ["pan","lift","roll","pitch"];
+const LABEL = {pan:"Pan",lift:"Lift",roll:"Roll",pitch:"Pitch"};
+
+// ---------- settings (remembered on this phone) ----------
+const DEFAULTS = {cam:"user", place:"below", mirror:true,
+  gain:{pan:1, lift:1, roll:1, pitch:1}, inv:{pan:false, lift:false, roll:false, pitch:false},
+  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0}};
+let S = structuredClone(DEFAULTS);
+try { const saved = JSON.parse(localStorage.getItem("iyh-settings") || "null"); if (saved) S = {...S, ...saved, gain:{...S.gain,...saved.gain}, inv:{...S.inv,...saved.inv}, neutral:{...S.neutral,...saved.neutral}}; } catch(e){}
+const save = () => { try { localStorage.setItem("iyh-settings", JSON.stringify(S)); } catch(e){} };
+
+// ---------- DOM ----------
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+const msg = t => $("msg").textContent = t;
+$("selCam").value = S.cam; $("selPlace").value = S.place; $("chkMirror").checked = S.mirror;
+const meters = {};
+for (const a of AXES) {
+  const n = document.createElement("div"); n.className = "n"; n.textContent = LABEL[a];
+  const m = document.createElement("div"); m.className = "meter"; m.innerHTML = "<i></i><b></b>";
+  const g = document.createElement("input"); g.type = "range"; g.min = 0.3; g.max = 3; g.step = 0.1; g.value = S.gain[a]; g.title = "strength";
+  g.oninput = () => { S.gain[a] = +g.value; save(); };
+  const iv = document.createElement("label"); iv.className = "inv";
+  iv.innerHTML = `<input type="checkbox" ${S.inv[a] ? "checked" : ""}> inv`;
+  iv.firstChild.onchange = e => { S.inv[a] = e.target.checked; save(); };
+  $("axes").append(n, m, g, iv); meters[a] = m.querySelector("b");
+}
+function showMeter(a, v){ const b = meters[a]; const w = Math.abs(v)/2; b.style.width = w + "%"; b.style.left = (v < 0 ? 50 - w : 50) + "%"; }
+function applyMirror(){ video.classList.toggle("mirror", S.mirror); canvas.classList.toggle("mirror", S.mirror); }
+applyMirror();
+
+// ---------- One Euro filter (smooth when still, fast when moving) ----------
+class OneEuro {
+  constructor(minCut=1.2, beta=0.02, dCut=1){ this.minCut=minCut; this.beta=beta; this.dCut=dCut; this.x=null; this.dx=0; this.t=0; }
+  a(cut, dt){ const r = 2*Math.PI*cut*dt; return r/(r+1); }
+  f(v, t){
+    if (this.x === null){ this.x=v; this.t=t; return v; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    const dv = (v - this.x)/dt; this.dx += this.a(this.dCut, dt)*(dv - this.dx);
+    const cut = this.minCut + this.beta*Math.abs(this.dx);
+    this.x += this.a(cut, dt)*(v - this.x); return this.x;
+  }
+  reset(){ this.x = null; }
+}
+const filt = {x:new OneEuro(1.2,0.6), y:new OneEuro(1.2,0.6), size:new OneEuro(1,0.4), roll:new OneEuro(1,0.02), pitch:new OneEuro(1,0.02)};
+
+// ---------- hand measurements ----------
+const sub = (a,b) => ({x:a.x-b.x, y:a.y-b.y, z:a.z-b.z});
+const DEG = 180/Math.PI;
+let aspect = 4/3;
+function measure(lm, wl){
+  // palm centre and size in the camera image (0..1)
+  const ids = [0,5,9,13,17];
+  let x=0, y=0; for (const i of ids){ x += lm[i].x; y += lm[i].y; } x/=5; y/=5;
+  if (S.mirror) x = 1 - x;
+  const size = Math.hypot((lm[9].x-lm[0].x)*aspect, lm[9].y-lm[0].y);
+  // 3D tilt from world landmarks (metres, camera axes)
+  let across = sub(wl[17], wl[5]);              // index knuckle -> pinky knuckle
+  if (across.x < 0) across = {x:-across.x, y:-across.y, z:-across.z}; // same result for left or right hand
+  const fwd = sub(wl[9], wl[0]);                  // wrist -> middle knuckle
+  const la = Math.hypot(across.x,across.y,across.z) || 1, lf = Math.hypot(fwd.x,fwd.y,fwd.z) || 1;
+  let roll, pitch;
+  if (S.place === "below"){          // camera under the hand: tilt shows as depth change
+    roll  = Math.asin(across.z/la)*DEG;
+    pitch = Math.asin(-fwd.z/lf)*DEG;
+  } else {                           // camera in front: tilt shows as up/down in the image
+    roll  = Math.asin(across.y/la)*DEG;
+    pitch = Math.asin(-fwd.y/lf)*DEG;
+  }
+  if (S.mirror) roll = -roll;
+  return {x, y, size, roll, pitch};
+}
+
+// raw measurement -> -100..100 per axis
+function toAxes(m){
+  const N = S.neutral, c = v => Math.max(-100, Math.min(100, v));
+  const out = {};
+  out.pan  = (m.x - N.x) / 0.35 * 100;                        // ~35% of frame width = full pan
+  if (S.place === "below") out.lift = (N.size - m.size) / (N.size*0.5) * 100; // hand further away = smaller = higher
+  else                     out.lift = (N.y - m.y) / 0.30 * 100;              // hand higher in frame = up
+  out.roll  = (m.roll  - N.roll)  / 35 * 100;                  // 35° hand tilt = full roll
+  out.pitch = (m.pitch - N.pitch) / 30 * 100;                  // 30° hand tilt = full pitch
+  for (const a of AXES) out[a] = c(out[a] * S.gain[a] * (S.inv[a] ? -1 : 1));
+  return out;
+}
+
+// ---------- camera + MediaPipe ----------
+let landmarker = null, stream = null, running = false, lastRaw = null;
+let current = {pan:0, lift:0, roll:0, pitch:0, hand:false};
+let wakeLock = null;
+
+async function startCamera(){
+  try {
+    msg("Loading hand tracking… (needs internet the first time)");
+    if (!landmarker){
+      const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+      const opts = (delegate) => ({ baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate },
+        runningMode:"VIDEO", numHands:1, minHandDetectionConfidence:0.6, minHandPresenceConfidence:0.6, minTrackingConfidence:0.5 });
+      try { landmarker = await HandLandmarker.createFromOptions(fs, opts("GPU")); }
+      catch(e){ landmarker = await HandLandmarker.createFromOptions(fs, opts("CPU")); }
+    }
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:S.cam, width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30} }, audio:false });
+    video.srcObject = stream; await video.play();
+    aspect = (video.videoWidth || 640) / (video.videoHeight || 480);
+    $("trk").textContent = "camera on"; $("trk").className = "pill ok";
+    msg("Camera on. Hold your hand flat where visitors will hold theirs, then tap “Set neutral”.");
+    keepAwake();
+    if (!running){ running = true; requestAnimationFrame(loop); }
+  } catch(e){
+    $("trk").textContent = "camera error"; $("trk").className = "pill bad";
+    msg("Camera problem: " + e.message + " — allow camera access and open the page over https.");
+  }
+}
+
+let lastVideoTime = -1;
+function loop(){
+  if (!running) return;
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime){
+    lastVideoTime = video.currentTime;
+    const now = performance.now();
+    const res = landmarker.detectForVideo(video, now);
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if (res.landmarks && res.landmarks.length){
+      const lm = res.landmarks[0], wl = res.worldLandmarks[0];
+      drawHand(lm);
+      const raw = measure(lm, wl), t = now/1000;
+      const m = {x:filt.x.f(raw.x,t), y:filt.y.f(raw.y,t), size:filt.size.f(raw.size,t), roll:filt.roll.f(raw.roll,t), pitch:filt.pitch.f(raw.pitch,t)};
+      lastRaw = m;
+      current = {...toAxes(m), hand:true};
+      $("trk").textContent = "hand ✓"; $("trk").className = "pill ok";
+    } else {
+      current = {pan:0, lift:0, roll:0, pitch:0, hand:false};
+      for (const k in filt) filt[k].reset();
+      $("trk").textContent = "no hand"; $("trk").className = "pill";
+    }
+    for (const a of AXES) showMeter(a, current[a]);
+    $("dot").className = current.hand ? "hand" : "";
+  }
+  requestAnimationFrame(loop);
+}
+
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+function drawHand(lm){
+  const W = canvas.width, H = canvas.height;
+  ctx.lineWidth = 3; ctx.strokeStyle = "#ffd84d"; ctx.fillStyle = "#fff";
+  ctx.beginPath(); for (const [a,b] of BONES){ ctx.moveTo(lm[a].x*W, lm[a].y*H); ctx.lineTo(lm[b].x*W, lm[b].y*H); } ctx.stroke();
+  for (const p of lm){ ctx.beginPath(); ctx.arc(p.x*W, p.y*H, 4, 0, 7); ctx.fill(); }
+}
+
+// ---------- Bluetooth to the ESP32 ----------
+let chr = null, device = null, sending = false;
+async function connect(){
+  if (!navigator.bluetooth){ msg("This browser has no Bluetooth. Android: use Chrome. iPhone: use the Bluefy app."); return; }
+  try {
+    msg("Pick “PaperPlane” in the list…");
+    device = await navigator.bluetooth.requestDevice({ filters:[{namePrefix:"PaperPlane"}], optionalServices:[SVC] });
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    await openGatt();
+  } catch(e){ msg("Bluetooth: " + e.message); }
+}
+async function openGatt(){
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  chr = await svc.getCharacteristic(CHR);
+  $("bt").textContent = "plane: connected"; $("bt").className = "pill ok";
+  msg("Connected. Move your hand — the plane should follow.");
+}
+async function onDisconnected(){
+  chr = null; $("bt").textContent = "plane: reconnecting…"; $("bt").className = "pill bad";
+  for (let i = 0; i < 30 && device && !chr; i++){        // keep trying for about a minute
+    try { await openGatt(); return; } catch(e){ await new Promise(r => setTimeout(r, 2000)); }
+  }
+  $("bt").textContent = "plane: not connected"; msg("Lost the plane. Tap “Connect plane” again.");
+}
+// packet: 5 bytes, each value +128 so no byte is ever 0 → [pan, lift, roll, pitch, 'H' or 'N']
+setInterval(async () => {
+  if (!chr || sending) return;
+  const b = v => Math.round(Math.max(-100, Math.min(100, v))) + 128;
+  const pkt = new Uint8Array([b(current.pan), b(current.lift), b(current.roll), b(current.pitch), current.hand ? 72 : 78]);
+  sending = true;
+  try { if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(pkt); else await chr.writeValue(pkt); }
+  catch(e){ /* dropped packet — the next one follows in 33 ms */ }
+  sending = false;
+}, 33);
+
+// ---------- calibration + exhibit ----------
+function setNeutral(){
+  if (!lastRaw || !current.hand){ msg("Hold your hand in view first."); return; }
+  S.neutral = {...lastRaw}; save();
+  msg("Neutral saved. This hand position = plane centred and level.");
+}
+async function keepAwake(){
+  try { if ("wakeLock" in navigator){ wakeLock = await navigator.wakeLock.request("screen"); } } catch(e){}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+
+$("btnStart").onclick = startCamera;
+$("btnConnect").onclick = connect;
+$("btnNeutral").onclick = setNeutral;
+$("selCam").onchange = e => { S.cam = e.target.value; S.mirror = S.cam === "user"; $("chkMirror").checked = S.mirror; applyMirror(); save(); if (stream) startCamera(); };
+$("selPlace").onchange = e => { S.place = e.target.value; save(); msg("Placement changed — tap “Set neutral” again."); };
+$("chkMirror").onchange = e => { S.mirror = e.target.checked; applyMirror(); save(); };
+$("btnHide").onclick = () => $("panel").classList.add("hidden");
+$("stage").onclick = () => $("panel").classList.remove("hidden");
+$("btnExhibit").onclick = () => { $("exhibit").classList.add("on"); try { document.documentElement.requestFullscreen?.(); } catch(e){} };
+// leave exhibit mode: press and hold for 2 seconds
+let holdT = null;
+$("exhibit").addEventListener("pointerdown", () => { holdT = setTimeout(() => $("exhibit").classList.remove("on"), 2000); });
+$("exhibit").addEventListener("pointerup", () => clearTimeout(holdT));
+</script>
+</body>
+</html>
