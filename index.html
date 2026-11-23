@@ -81,6 +81,7 @@
       <label>Camera</label>
       <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
       <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
+      <label class="inv"><input type="checkbox" id="chkFlipT"> flip up/down</label>
     </div>
     <div class="axes" id="axes"></div>
   </details>
@@ -110,7 +111,7 @@ const save = () => { try { localStorage.setItem("iyh-settings", JSON.stringify(S
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 const msg = t => $("msg").textContent = t;
-$("selCam").value = S.cam; $("chkMirror").checked = S.mirror;
+$("selCam").value = S.cam; $("chkMirror").checked = S.mirror; $("chkFlipT").checked = !!S.flipT;
 const meters = {};
 for (const a of AXES) {
   const n = document.createElement("div"); n.className = "n"; n.textContent = LABEL[a];
@@ -202,7 +203,7 @@ function toAxes(m){
     // STEADY: only what the camera sees well. pan & lift = hand position (%), tilt = finger angle (deg), roll = automatic on the ESP32
     out.pan   = (m.sPan - N.sPan) / 40 * 100;                // fingers point 40° left/right = full turn
     out.lift  = (N.y - m.y) / 0.30 * 100;
-    out.pitch = m.gPitch - N.gPitch;                          // fingers up/down (degrees)
+    out.pitch = (m.gPitch - N.gPitch) * (S.flipT ? -1 : 1);                          // fingers up/down (degrees)
     out.roll  = 0;
   } else if (S.mode === "gesture"){
     // EXACT copy: values are degrees (1:1). The ESP32 moves each servo by the same number of degrees.
@@ -353,6 +354,7 @@ $("btnConnect").onclick = connect;
 $("btnNeutral").onclick = setNeutral;
 $("selCam").onchange = e => { S.cam = e.target.value; S.mirror = S.cam === "user"; $("chkMirror").checked = S.mirror; applyMirror(); save(); if (stream) startCamera(); };
 $("chkMirror").onchange = e => { S.mirror = e.target.checked; applyMirror(); save(); };
+$("chkFlipT").onchange = e => { S.flipT = e.target.checked; save(); };
 $("btnHide").onclick = () => $("panel").classList.add("hidden");
 $("stage").onclick = () => $("panel").classList.toggle("hidden");
 $("btnExhibit").onclick = () => { $("exhibit").classList.add("on"); try { document.documentElement.requestFullscreen?.(); } catch(e){} };
