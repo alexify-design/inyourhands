@@ -149,7 +149,7 @@ const DEG = 180/Math.PI;
 let aspect = 4/3;
 const wrap = a => { while (a > 180) a -= 360; while (a < -180) a += 360; return a; };
 const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
-let lastYaw = 0;
+let lastYaw = 0, lastSeen = 0;
 function measure(lm, wl, hs){
   // palm centre and size in the camera image (0..1)
   const ids = [0,5,9,13,17];
@@ -233,7 +233,7 @@ async function startCamera(){
     if (!landmarker){
       const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
       const opts = (delegate) => ({ baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate },
-        runningMode:"VIDEO", numHands:1, minHandDetectionConfidence:0.6, minHandPresenceConfidence:0.6, minTrackingConfidence:0.5 });
+        runningMode:"VIDEO", numHands:1, minHandDetectionConfidence:0.4, minHandPresenceConfidence:0.4, minTrackingConfidence:0.4 });
       try { landmarker = await HandLandmarker.createFromOptions(fs, opts("GPU")); }
       catch(e){ landmarker = await HandLandmarker.createFromOptions(fs, opts("CPU")); }
     }
@@ -262,6 +262,7 @@ function loop(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
     if (res.landmarks && res.landmarks.length){
       const lm = res.landmarks[0], wl = res.worldLandmarks[0];
+      lastSeen = now;
       drawHand(lm);
       const hd = res.handednesses && res.handednesses[0] && res.handednesses[0][0];
       const hs = hd && hd.categoryName === "Left" ? -1 : 1;
@@ -273,6 +274,8 @@ function loop(){
       current = fist ? {...current, hand:true, stop:true} : {...toAxes(m), hand:true, stop:false};
       $("trk").textContent = fist ? "✊ stop" : "hand ✓"; $("trk").className = fist ? "pill bad" : "pill ok";
       showGesture();
+    } else if (now - lastSeen < 700) {
+      // hand missed for a moment (tilted / pointing at camera): keep the last values, don't drop it
     } else {
       current = {pan:0, lift:0, roll:0, pitch:0, hand:false, stop:false}; fist = false;
       for (const k in filt) filt[k].reset();
