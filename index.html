@@ -9,7 +9,10 @@
   :root{--bg:#000;--fg:#f2f2f2;--dim:#8a8a8a;--line:#2a2a2a;--accent:#ffd84d;--ok:#4cd98a;--bad:#ff6b6b;}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none}
-  #stage{position:fixed;inset:0;overflow:hidden;background:#000}
+  body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+  /* camera fills everything above the compact panel; hide the panel for full screen */
+  #stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;background:#000}
+  #hint{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff9;pointer-events:none}
   video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   video.mirror,#overlay.mirror{transform:scaleX(-1)}
   #bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 12px 10px;background:linear-gradient(#000c,#0000)}
@@ -19,7 +22,12 @@
   button:active{transform:scale(.97)}
   .pill{font-size:12px;padding:4px 9px;border-radius:99px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
   .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.bad{color:var(--bad);border-color:var(--bad)}
-  #panel{position:fixed;left:0;right:0;bottom:0;max-height:62%;overflow:auto;padding:12px 14px calc(14px + env(safe-area-inset-bottom));background:#000d;border-top:1px solid var(--line);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+  #panel{flex:0 0 auto;max-height:42vh;overflow:auto;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:#0b0b0b;border-top:1px solid var(--line)}
+  .btns{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .btns button{padding:12px 6px;font-size:14px}
+  .btns2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  details{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+  summary{color:var(--dim);font-size:13px;cursor:pointer;padding:4px 0}
   #panel.hidden{display:none}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
   .row label{color:var(--dim);font-size:13px}
@@ -31,7 +39,7 @@
   .meter b{position:absolute;top:0;bottom:0;background:var(--accent);border-radius:5px}
   input[type=range]{width:70px;accent-color:var(--accent)}
   .inv{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:3px}
-  #msg{font-size:13px;color:var(--dim);margin-top:6px;min-height:18px}
+  #msg{font-size:12.5px;color:var(--dim);margin-top:6px;min-height:18px}
   #exhibit{position:fixed;inset:0;background:#000;display:none;align-items:flex-end;justify-content:center;padding-bottom:30px}
   #exhibit.on{display:flex}
   #exhibit span{width:8px;height:8px;border-radius:50%;background:#222}
@@ -43,6 +51,7 @@
 <div id="stage">
   <video id="video" playsinline muted autoplay></video>
   <canvas id="overlay"></canvas>
+  <div id="hint">tap the camera to show / hide the panel</div>
 </div>
 
 <div id="bar">
@@ -52,24 +61,27 @@
 </div>
 
 <div id="panel">
-  <div class="row">
-    <button id="btnStart" class="primary">1 · Start camera</button>
-    <button id="btnConnect">2 · Connect plane</button>
-    <button id="btnNeutral">3 · Set neutral</button>
+  <div class="btns">
+    <button id="btnStart" class="primary">1 · Camera</button>
+    <button id="btnConnect">2 · Connect</button>
+    <button id="btnNeutral">3 · Neutral</button>
   </div>
-  <div class="row">
-    <label>Camera</label>
-    <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
-    <label>Placement</label>
-    <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
-    <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
+  <div id="msg">Tap “Camera”, hold your hand flat in view, then “Connect”.</div>
+  <div class="btns2">
+    <button id="btnHide">Full camera view</button>
+    <button id="btnExhibit">Exhibit (black)</button>
   </div>
-  <div class="axes" id="axes"></div>
-  <div class="row" style="margin-top:10px">
-    <button id="btnExhibit">Exhibit mode (black screen)</button>
-    <button id="btnHide">Hide panel</button>
-  </div>
-  <div id="msg">Tap “Start camera”, hold your hand flat in view, then “Connect plane”.</div>
+  <details id="more">
+    <summary>Settings &amp; meters</summary>
+    <div class="row">
+      <label>Camera</label>
+      <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
+      <label>Placement</label>
+      <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
+      <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
+    </div>
+    <div class="axes" id="axes"></div>
+  </details>
 </div>
 
 <div id="exhibit"><span id="dot"></span></div>
@@ -285,7 +297,7 @@ $("selCam").onchange = e => { S.cam = e.target.value; S.mirror = S.cam === "user
 $("selPlace").onchange = e => { S.place = e.target.value; save(); msg("Placement changed — tap “Set neutral” again."); };
 $("chkMirror").onchange = e => { S.mirror = e.target.checked; applyMirror(); save(); };
 $("btnHide").onclick = () => $("panel").classList.add("hidden");
-$("stage").onclick = () => $("panel").classList.remove("hidden");
+$("stage").onclick = () => $("panel").classList.toggle("hidden");
 $("btnExhibit").onclick = () => { $("exhibit").classList.add("on"); try { document.documentElement.requestFullscreen?.(); } catch(e){} };
 // leave exhibit mode: press and hold for 2 seconds
 let holdT = null;
