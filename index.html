@@ -70,7 +70,7 @@
     <button id="btnConnect">2 · Connect</button>
     <button id="btnNeutral">3 · Neutral</button>
   </div>
-  <div id="msg">Tap “Camera” → “Connect”. Hold your hand flat (fingers pointing sideways) and tap “Neutral”. Move left/right to turn, up/down to rise, point fingers up/down to tilt.</div>
+  <div id="msg">Tap “Camera” → “Connect”. Hold your hand flat, fingers pointing at the phone, and tap “Neutral”. Point fingers left/right to turn, up/down to tilt. Fist = stop.</div>
   <div class="btns2">
     <button id="btnHide">Full camera view</button>
     <button id="btnExhibit">Exhibit (black)</button>
@@ -81,7 +81,7 @@
       <label>Camera</label>
       <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
       <label>Mode</label>
-      <select id="selMode"><option value="steady">Steady (move &amp; point)</option><option value="gesture">Gesture (twist, less stable)</option><option value="position">Position (move hand)</option></select>
+      <select id="selMode"><option value="steady">Steady (point)</option><option value="gesture">Gesture (twist, less stable)</option><option value="position">Position (move hand)</option></select>
       <label>Placement</label>
       <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
       <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
@@ -104,7 +104,7 @@ const LABEL = {pan:"Pan",lift:"Lift",roll:"Roll",pitch:"Pitch"};
 // ---------- settings (remembered on this phone) ----------
 const DEFAULTS = {cam:"user", place:"front", mode:"steady", v:2, mirror:true,
   gain:{pan:1, lift:1, roll:1, pitch:1}, inv:{pan:false, lift:false, roll:false, pitch:false},
-  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0, sPitch:0}};
+  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0, sPitch:0, sPan:0}};
 let S = structuredClone(DEFAULTS);
 try { const saved = JSON.parse(localStorage.getItem("iyh-settings") || "null"); if (saved) S = {...S, ...saved, gain:{...S.gain,...saved.gain}, inv:{...S.inv,...saved.inv}, neutral:{...S.neutral,...saved.neutral}}; } catch(e){}
 if (S.v !== 2){ S.mode = "steady"; S.v = 2; }          // switch older phones to Steady once
@@ -144,7 +144,7 @@ class OneEuro {
   reset(){ this.x = null; }
 }
 const filt = {x:new OneEuro(1.2,0.6), y:new OneEuro(1.2,0.6), size:new OneEuro(1,0.4), roll:new OneEuro(1,0.02), pitch:new OneEuro(1,0.02),
-  gYaw:new OneEuro(1,0.02), gPitch:new OneEuro(1,0.02), gRoll:new OneEuro(1,0.02), sPitch:new OneEuro(0.8,0.02)};
+  gYaw:new OneEuro(1,0.02), gPitch:new OneEuro(1,0.02), gRoll:new OneEuro(1,0.02), sPitch:new OneEuro(0.8,0.02), sPan:new OneEuro(0.8,0.02)};
 
 // ---------- hand measurements ----------
 const sub = (a,b) => ({x:a.x-b.x, y:a.y-b.y, z:a.z-b.z});
@@ -190,7 +190,9 @@ function measure(lm, wl, hs){
   // ---- steady tilt: finger angle in the flat picture (no depth needed) ----
   const sdx = (lm[9].x - lm[0].x) * aspect, sdy = lm[9].y - lm[0].y;
   const sPitch = Math.atan2(-sdy, Math.abs(sdx)) * DEG;     // fingers up = +, down = -, works pointing left or right
-  return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, sPitch, open};
+  // ---- steady pan: fingers pointing left / right (sideways part of the finger direction) ----
+  const sPan = Math.asin(Math.max(-1, Math.min(1, S.mirror ? -fn.x : fn.x))) * DEG;
+  return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, sPitch, sPan, open};
 }
 
 // raw measurement -> -100..100 per axis
@@ -202,9 +204,9 @@ function toAxes(m){
   else out.lift = (N.y - m.y) / 0.30 * 100;                    // hand higher in the picture = plane higher
   if (S.mode === "steady"){
     // STEADY: only what the camera sees well. pan & lift = hand position (%), tilt = finger angle (deg), roll = automatic on the ESP32
-    out.pan   = (m.x - N.x) / 0.30 * 100;
+    out.pan   = (m.sPan - N.sPan) / 40 * 100;                // fingers point 40° left/right = full turn
     out.lift  = (N.y - m.y) / 0.30 * 100;
-    out.pitch = m.sPitch - N.sPitch;
+    out.pitch = m.gPitch - N.gPitch;                          // fingers up/down (degrees)
     out.roll  = 0;
   } else if (S.mode === "gesture"){
     // EXACT copy: values are degrees (1:1). The ESP32 moves each servo by the same number of degrees.
@@ -265,7 +267,7 @@ function loop(){
       const hs = hd && hd.categoryName === "Left" ? -1 : 1;
       const raw = measure(lm, wl, hs), t = now/1000;
       const m = {x:filt.x.f(raw.x,t), y:filt.y.f(raw.y,t), size:filt.size.f(raw.size,t), roll:filt.roll.f(raw.roll,t), pitch:filt.pitch.f(raw.pitch,t),
-                 gYaw:filt.gYaw.f(raw.gYaw,t), gPitch:filt.gPitch.f(raw.gPitch,t), gRoll:filt.gRoll.f(raw.gRoll,t), sPitch:filt.sPitch.f(raw.sPitch,t)};
+                 gYaw:filt.gYaw.f(raw.gYaw,t), gPitch:filt.gPitch.f(raw.gPitch,t), gRoll:filt.gRoll.f(raw.gRoll,t), sPitch:filt.sPitch.f(raw.sPitch,t), sPan:filt.sPan.f(raw.sPan,t)};
       fist = fist ? raw.open < 1.45 : raw.open < 1.2;            // hysteresis: no flicker
       if (!fist) lastRaw = m;
       current = fist ? {...current, hand:true, stop:true} : {...toAxes(m), hand:true, stop:false};
@@ -341,7 +343,7 @@ setInterval(async () => {
 function setNeutral(){
   if (!lastRaw || !current.hand){ msg("Hold your hand in view first."); return; }
   S.neutral = {...lastRaw}; save();
-  msg(S.mode === "steady" ? "Neutral saved. Move left/right = turn, up/down = rise, fingers up/down = tilt. Fist = stop."
+  msg(S.mode === "steady" ? "Neutral saved. Point fingers left/right = turn, up/down = tilt. Fist = stop."
     : S.mode === "gesture" ? "Neutral saved. Your hand is the plane now: tilt, roll, turn and raise it. Fist = stop."
                            : "Neutral saved. This hand position = plane centred and level.");
 }
