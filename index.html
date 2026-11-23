@@ -80,10 +80,6 @@
     <div class="row">
       <label>Camera</label>
       <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
-      <label>Mode</label>
-      <select id="selMode"><option value="steady">Steady (point)</option><option value="gesture">Gesture (twist, less stable)</option><option value="position">Position (move hand)</option></select>
-      <label>Placement</label>
-      <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
       <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
     </div>
     <div class="axes" id="axes"></div>
@@ -107,14 +103,14 @@ const DEFAULTS = {cam:"user", place:"front", mode:"steady", v:2, mirror:true,
   neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0, sPitch:0, sPan:0}};
 let S = structuredClone(DEFAULTS);
 try { const saved = JSON.parse(localStorage.getItem("iyh-settings") || "null"); if (saved) S = {...S, ...saved, gain:{...S.gain,...saved.gain}, inv:{...S.inv,...saved.inv}, neutral:{...S.neutral,...saved.neutral}}; } catch(e){}
-if (S.v !== 2){ S.mode = "steady"; S.v = 2; }          // switch older phones to Steady once
+S.mode = "steady"; S.place = "front";                 // one method only: Steady, phone in front
 const save = () => { try { localStorage.setItem("iyh-settings", JSON.stringify(S)); } catch(e){} };
 
 // ---------- DOM ----------
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 const msg = t => $("msg").textContent = t;
-$("selCam").value = S.cam; $("selPlace").value = S.place; $("selMode").value = S.mode; $("chkMirror").checked = S.mirror;
+$("selCam").value = S.cam; $("chkMirror").checked = S.mirror;
 const meters = {};
 for (const a of AXES) {
   const n = document.createElement("div"); n.className = "n"; n.textContent = LABEL[a];
@@ -356,8 +352,6 @@ $("btnStart").onclick = startCamera;
 $("btnConnect").onclick = connect;
 $("btnNeutral").onclick = setNeutral;
 $("selCam").onchange = e => { S.cam = e.target.value; S.mirror = S.cam === "user"; $("chkMirror").checked = S.mirror; applyMirror(); save(); if (stream) startCamera(); };
-$("selPlace").onchange = e => { S.place = e.target.value; save(); msg("Placement changed — tap “Set neutral” again."); };
-$("selMode").onchange = e => { S.mode = e.target.value; save(); msg("Mode changed — tap “Neutral” again."); };
 $("chkMirror").onchange = e => { S.mirror = e.target.checked; applyMirror(); save(); };
 $("btnHide").onclick = () => $("panel").classList.add("hidden");
 $("stage").onclick = () => $("panel").classList.toggle("hidden");
