@@ -12,7 +12,7 @@
   body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
   /* camera fills everything above the compact panel; hide the panel for full screen */
   #stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;background:#000}
-  #gest{position:absolute;left:0;right:0;top:calc(56px + env(safe-area-inset-top));text-align:center;font-size:26px;font-weight:700;letter-spacing:.02em;color:#fff;text-shadow:0 2px 8px #000;pointer-events:none}
+  #gest{position:absolute;left:0;right:0;top:calc(56px + env(safe-area-inset-top));text-align:center;font-size:20px;font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:.02em;color:#fff;text-shadow:0 2px 8px #000;pointer-events:none}
   #gest.stop{color:var(--bad)}
   #hint{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff9;pointer-events:none}
   video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
@@ -69,7 +69,7 @@
     <button id="btnConnect">2 · Connect</button>
     <button id="btnNeutral">3 · Neutral</button>
   </div>
-  <div id="msg">Tap “Camera” → “Connect”. Then hold your hand flat like a plane, fingers toward the camera, and tap “Neutral”.</div>
+  <div id="msg">Tap “Camera” → “Connect”. Hold your hand flat like the plane (palm down, fingers pointing sideways), then tap “Neutral”.</div>
   <div class="btns2">
     <button id="btnHide">Full camera view</button>
     <button id="btnExhibit">Exhibit (black)</button>
@@ -150,6 +150,7 @@ const DEG = 180/Math.PI;
 let aspect = 4/3;
 const wrap = a => { while (a > 180) a -= 360; while (a < -180) a += 360; return a; };
 const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+let lastYaw = 0;
 function measure(lm, wl, hs){
   // palm centre and size in the camera image (0..1)
   const ids = [0,5,9,13,17];
@@ -170,14 +171,18 @@ function measure(lm, wl, hs){
     pitch = Math.asin(-fwd.y/lf)*DEG;
   }
   if (S.mirror) roll = -roll;
-  // ---- gesture angles: the hand is the plane (neutral = flat hand, fingers pointing at the camera) ----
-  const fx = S.mirror ? -fwd.x : fwd.x;
-  const gYaw   = Math.atan2(fx, Math.hypot(fwd.y, fwd.z)) * DEG;      // fingers left / right
-  const gPitch = Math.atan2(-fwd.y, Math.hypot(fwd.x, fwd.z)) * DEG;  // fingers up / down
-  let ac = sub(wl[17], wl[5]); const ax = (S.mirror ? -ac.x : ac.x) * hs;
-  // roll only counts while the fingers point roughly at the camera (not during up/down/left/right pointing)
-  const toCam = -fwd.z / lf, rollW = Math.max(0, Math.min(1, (toCam - 0.35) / 0.45));
-  const gRoll  = Math.atan2(-ac.y * hs, ax) * DEG * rollW;             // hand rotated on its side
+  // ---- gesture angles: the hand IS the plane, copied 1:1 in degrees ----
+  // fingers = nose, index->pinky = wing. Angles are measured against the real up/down of the image,
+  // so nose up = tilt up, wing tip up = roll, nose heading = pan. Neutral subtracts the rest pose.
+  const fn = {x:fwd.x/lf, y:fwd.y/lf, z:fwd.z/lf};
+  let wg = sub(wl[17], wl[5]); const lw = Math.hypot(wg.x, wg.y, wg.z) || 1;
+  wg = {x:wg.x*hs/lw, y:wg.y*hs/lw, z:wg.z*hs/lw};
+  const elev = v => Math.asin(Math.max(-1, Math.min(1, -v.y))) * DEG;
+  const gPitch = elev(fn);                                   // nose up / down
+  const gRoll  = elev(wg);                                   // wing tip up / down
+  const flat = Math.hypot(fn.x, fn.z);
+  if (flat > 0.35) lastYaw = Math.atan2(-fn.z, S.mirror ? -fn.x : fn.x) * DEG;   // heading (held while pointing straight up/down)
+  const gYaw = lastYaw;
   // fist = fingertips close to the wrist
   const open = ([8,12,16,20].reduce((t,i) => t + dist(wl[i], wl[0]), 0) / 4) / (dist(wl[9], wl[0]) || 1);
   return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, open};
@@ -188,12 +193,13 @@ function toAxes(m){
   const N = S.neutral, c = v => Math.max(-100, Math.min(100, v));
   const out = {};
   out.pan  = (m.x - N.x) / 0.35 * 100;                        // ~35% of frame width = full pan
-  if (S.place === "below") out.lift = (N.size - m.size) / (N.size*0.5) * 100; // hand further away = smaller = higher
-  else                     out.lift = (N.y - m.y) / 0.30 * 100;              // hand higher in frame = up
+  if (S.place === "below" && S.mode !== "gesture") out.lift = (N.size - m.size) / (N.size*0.5) * 100; // hand further away = higher
+  else out.lift = (N.y - m.y) / 0.30 * 100;                    // hand higher in the picture = plane higher
   if (S.mode === "gesture"){
-    out.pan   = wrap(m.gYaw   - N.gYaw)   / 40 * 100;            // point 40° left/right = full turn
-    out.pitch = wrap(m.gPitch - N.gPitch) / 40 * 100;            // point 40° up/down   = full climb/dive
-    out.roll  = wrap(m.gRoll  - N.gRoll)  / 45 * 100;            // rotate 45° on its side = full bank
+    // EXACT copy: values are degrees (1:1). The ESP32 moves each servo by the same number of degrees.
+    out.pan   = wrap(m.gYaw   - N.gYaw);
+    out.pitch = wrap(m.gPitch - N.gPitch);
+    out.roll  = wrap(m.gRoll  - N.gRoll);
   } else {
     out.roll  = (m.roll  - N.roll)  / 35 * 100;                  // 35° hand tilt = full roll
     out.pitch = (m.pitch - N.pitch) / 30 * 100;                  // 30° hand tilt = full pitch
@@ -272,10 +278,8 @@ function showGesture(){
   g.className = "";
   if (S.mode !== "gesture"){ g.textContent = ""; return; }
   const c = current, parts = [];
-  if (c.pitch > 30) parts.push("↑ climb"); else if (c.pitch < -30) parts.push("↓ dive");
-  if (c.pan > 30) parts.push("→ right"); else if (c.pan < -30) parts.push("← left");
-  if (c.roll > 30) parts.push("↻ bank"); else if (c.roll < -30) parts.push("↺ bank");
-  g.textContent = parts.join("  ") || "✈ level";
+  const d = v => (v > 0 ? "+" : "") + Math.round(v) + "°";
+  g.textContent = `tilt ${d(c.pitch)}  roll ${d(c.roll)}  pan ${d(c.pan)}`;
 }
 
 const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
@@ -326,7 +330,7 @@ setInterval(async () => {
 function setNeutral(){
   if (!lastRaw || !current.hand){ msg("Hold your hand in view first."); return; }
   S.neutral = {...lastRaw}; save();
-  msg(S.mode === "gesture" ? "Neutral saved. Flat hand pointing at the camera = plane level. Point / tilt to fly, make a fist to stop."
+  msg(S.mode === "gesture" ? "Neutral saved. Your hand is the plane now: tilt, roll, turn and raise it. Fist = stop."
                            : "Neutral saved. This hand position = plane centred and level.");
 }
 async function keepAwake(){
