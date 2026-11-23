@@ -12,6 +12,8 @@
   body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
   /* camera fills everything above the compact panel; hide the panel for full screen */
   #stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;background:#000}
+  #gest{position:absolute;left:0;right:0;top:calc(56px + env(safe-area-inset-top));text-align:center;font-size:26px;font-weight:700;letter-spacing:.02em;color:#fff;text-shadow:0 2px 8px #000;pointer-events:none}
+  #gest.stop{color:var(--bad)}
   #hint{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#fff9;pointer-events:none}
   video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   video.mirror,#overlay.mirror{transform:scaleX(-1)}
@@ -51,6 +53,7 @@
 <div id="stage">
   <video id="video" playsinline muted autoplay></video>
   <canvas id="overlay"></canvas>
+  <div id="gest"></div>
   <div id="hint">tap the camera to show / hide the panel</div>
 </div>
 
@@ -66,7 +69,7 @@
     <button id="btnConnect">2 · Connect</button>
     <button id="btnNeutral">3 · Neutral</button>
   </div>
-  <div id="msg">Tap “Camera”, hold your hand flat in view, then “Connect”.</div>
+  <div id="msg">Tap “Camera” → “Connect”. Then hold your hand flat like a plane, fingers toward the camera, and tap “Neutral”.</div>
   <div class="btns2">
     <button id="btnHide">Full camera view</button>
     <button id="btnExhibit">Exhibit (black)</button>
@@ -76,6 +79,8 @@
     <div class="row">
       <label>Camera</label>
       <select id="selCam"><option value="user">Front</option><option value="environment">Back</option></select>
+      <label>Mode</label>
+      <select id="selMode"><option value="gesture">Gesture (point &amp; tilt)</option><option value="position">Position (move hand)</option></select>
       <label>Placement</label>
       <select id="selPlace"><option value="below">Below hand, looking up</option><option value="front">In front, facing visitor</option></select>
       <label class="inv"><input type="checkbox" id="chkMirror"> flip left/right</label>
@@ -96,9 +101,9 @@ const AXES = ["pan","lift","roll","pitch"];
 const LABEL = {pan:"Pan",lift:"Lift",roll:"Roll",pitch:"Pitch"};
 
 // ---------- settings (remembered on this phone) ----------
-const DEFAULTS = {cam:"user", place:"below", mirror:true,
+const DEFAULTS = {cam:"user", place:"front", mode:"gesture", mirror:true,
   gain:{pan:1, lift:1, roll:1, pitch:1}, inv:{pan:false, lift:false, roll:false, pitch:false},
-  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0}};
+  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0}};
 let S = structuredClone(DEFAULTS);
 try { const saved = JSON.parse(localStorage.getItem("iyh-settings") || "null"); if (saved) S = {...S, ...saved, gain:{...S.gain,...saved.gain}, inv:{...S.inv,...saved.inv}, neutral:{...S.neutral,...saved.neutral}}; } catch(e){}
 const save = () => { try { localStorage.setItem("iyh-settings", JSON.stringify(S)); } catch(e){} };
@@ -107,7 +112,7 @@ const save = () => { try { localStorage.setItem("iyh-settings", JSON.stringify(S
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 const msg = t => $("msg").textContent = t;
-$("selCam").value = S.cam; $("selPlace").value = S.place; $("chkMirror").checked = S.mirror;
+$("selCam").value = S.cam; $("selPlace").value = S.place; $("selMode").value = S.mode; $("chkMirror").checked = S.mirror;
 const meters = {};
 for (const a of AXES) {
   const n = document.createElement("div"); n.className = "n"; n.textContent = LABEL[a];
@@ -136,13 +141,16 @@ class OneEuro {
   }
   reset(){ this.x = null; }
 }
-const filt = {x:new OneEuro(1.2,0.6), y:new OneEuro(1.2,0.6), size:new OneEuro(1,0.4), roll:new OneEuro(1,0.02), pitch:new OneEuro(1,0.02)};
+const filt = {x:new OneEuro(1.2,0.6), y:new OneEuro(1.2,0.6), size:new OneEuro(1,0.4), roll:new OneEuro(1,0.02), pitch:new OneEuro(1,0.02),
+  gYaw:new OneEuro(1,0.02), gPitch:new OneEuro(1,0.02), gRoll:new OneEuro(1,0.02)};
 
 // ---------- hand measurements ----------
 const sub = (a,b) => ({x:a.x-b.x, y:a.y-b.y, z:a.z-b.z});
 const DEG = 180/Math.PI;
 let aspect = 4/3;
-function measure(lm, wl){
+const wrap = a => { while (a > 180) a -= 360; while (a < -180) a += 360; return a; };
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+function measure(lm, wl, hs){
   // palm centre and size in the camera image (0..1)
   const ids = [0,5,9,13,17];
   let x=0, y=0; for (const i of ids){ x += lm[i].x; y += lm[i].y; } x/=5; y/=5;
@@ -162,7 +170,17 @@ function measure(lm, wl){
     pitch = Math.asin(-fwd.y/lf)*DEG;
   }
   if (S.mirror) roll = -roll;
-  return {x, y, size, roll, pitch};
+  // ---- gesture angles: the hand is the plane (neutral = flat hand, fingers pointing at the camera) ----
+  const fx = S.mirror ? -fwd.x : fwd.x;
+  const gYaw   = Math.atan2(fx, Math.hypot(fwd.y, fwd.z)) * DEG;      // fingers left / right
+  const gPitch = Math.atan2(-fwd.y, Math.hypot(fwd.x, fwd.z)) * DEG;  // fingers up / down
+  let ac = sub(wl[17], wl[5]); const ax = (S.mirror ? -ac.x : ac.x) * hs;
+  // roll only counts while the fingers point roughly at the camera (not during up/down/left/right pointing)
+  const toCam = -fwd.z / lf, rollW = Math.max(0, Math.min(1, (toCam - 0.35) / 0.45));
+  const gRoll  = Math.atan2(-ac.y * hs, ax) * DEG * rollW;             // hand rotated on its side
+  // fist = fingertips close to the wrist
+  const open = ([8,12,16,20].reduce((t,i) => t + dist(wl[i], wl[0]), 0) / 4) / (dist(wl[9], wl[0]) || 1);
+  return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, open};
 }
 
 // raw measurement -> -100..100 per axis
@@ -172,15 +190,22 @@ function toAxes(m){
   out.pan  = (m.x - N.x) / 0.35 * 100;                        // ~35% of frame width = full pan
   if (S.place === "below") out.lift = (N.size - m.size) / (N.size*0.5) * 100; // hand further away = smaller = higher
   else                     out.lift = (N.y - m.y) / 0.30 * 100;              // hand higher in frame = up
-  out.roll  = (m.roll  - N.roll)  / 35 * 100;                  // 35° hand tilt = full roll
-  out.pitch = (m.pitch - N.pitch) / 30 * 100;                  // 30° hand tilt = full pitch
+  if (S.mode === "gesture"){
+    out.pan   = wrap(m.gYaw   - N.gYaw)   / 40 * 100;            // point 40° left/right = full turn
+    out.pitch = wrap(m.gPitch - N.gPitch) / 40 * 100;            // point 40° up/down   = full climb/dive
+    out.roll  = wrap(m.gRoll  - N.gRoll)  / 45 * 100;            // rotate 45° on its side = full bank
+  } else {
+    out.roll  = (m.roll  - N.roll)  / 35 * 100;                  // 35° hand tilt = full roll
+    out.pitch = (m.pitch - N.pitch) / 30 * 100;                  // 30° hand tilt = full pitch
+  }
   for (const a of AXES) out[a] = c(out[a] * S.gain[a] * (S.inv[a] ? -1 : 1));
   return out;
 }
 
 // ---------- camera + MediaPipe ----------
 let landmarker = null, stream = null, running = false, lastRaw = null;
-let current = {pan:0, lift:0, roll:0, pitch:0, hand:false};
+let current = {pan:0, lift:0, roll:0, pitch:0, hand:false, stop:false};
+let fist = false;
 let wakeLock = null;
 
 async function startCamera(){
@@ -219,20 +244,38 @@ function loop(){
     if (res.landmarks && res.landmarks.length){
       const lm = res.landmarks[0], wl = res.worldLandmarks[0];
       drawHand(lm);
-      const raw = measure(lm, wl), t = now/1000;
-      const m = {x:filt.x.f(raw.x,t), y:filt.y.f(raw.y,t), size:filt.size.f(raw.size,t), roll:filt.roll.f(raw.roll,t), pitch:filt.pitch.f(raw.pitch,t)};
-      lastRaw = m;
-      current = {...toAxes(m), hand:true};
-      $("trk").textContent = "hand ✓"; $("trk").className = "pill ok";
+      const hd = res.handednesses && res.handednesses[0] && res.handednesses[0][0];
+      const hs = hd && hd.categoryName === "Left" ? -1 : 1;
+      const raw = measure(lm, wl, hs), t = now/1000;
+      const m = {x:filt.x.f(raw.x,t), y:filt.y.f(raw.y,t), size:filt.size.f(raw.size,t), roll:filt.roll.f(raw.roll,t), pitch:filt.pitch.f(raw.pitch,t),
+                 gYaw:filt.gYaw.f(raw.gYaw,t), gPitch:filt.gPitch.f(raw.gPitch,t), gRoll:filt.gRoll.f(raw.gRoll,t)};
+      fist = fist ? raw.open < 1.45 : raw.open < 1.2;            // hysteresis: no flicker
+      if (!fist) lastRaw = m;
+      current = fist ? {...current, hand:true, stop:true} : {...toAxes(m), hand:true, stop:false};
+      $("trk").textContent = fist ? "✊ stop" : "hand ✓"; $("trk").className = fist ? "pill bad" : "pill ok";
+      showGesture();
     } else {
-      current = {pan:0, lift:0, roll:0, pitch:0, hand:false};
+      current = {pan:0, lift:0, roll:0, pitch:0, hand:false, stop:false}; fist = false;
       for (const k in filt) filt[k].reset();
+      $("gest").textContent = ""; $("gest").className = "";
       $("trk").textContent = "no hand"; $("trk").className = "pill";
     }
     for (const a of AXES) showMeter(a, current[a]);
     $("dot").className = current.hand ? "hand" : "";
   }
   requestAnimationFrame(loop);
+}
+
+function showGesture(){
+  const g = $("gest");
+  if (current.stop){ g.textContent = "✊ STOP"; g.className = "stop"; return; }
+  g.className = "";
+  if (S.mode !== "gesture"){ g.textContent = ""; return; }
+  const c = current, parts = [];
+  if (c.pitch > 30) parts.push("↑ climb"); else if (c.pitch < -30) parts.push("↓ dive");
+  if (c.pan > 30) parts.push("→ right"); else if (c.pan < -30) parts.push("← left");
+  if (c.roll > 30) parts.push("↻ bank"); else if (c.roll < -30) parts.push("↺ bank");
+  g.textContent = parts.join("  ") || "✈ level";
 }
 
 const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
@@ -272,7 +315,7 @@ async function onDisconnected(){
 setInterval(async () => {
   if (!chr || sending) return;
   const b = v => Math.round(Math.max(-100, Math.min(100, v))) + 128;
-  const pkt = new Uint8Array([b(current.pan), b(current.lift), b(current.roll), b(current.pitch), current.hand ? 72 : 78]);
+  const pkt = new Uint8Array([b(current.pan), b(current.lift), b(current.roll), b(current.pitch), current.stop ? 83 : current.hand ? 72 : 78]);   // 'S' stop, 'H' hand, 'N' none
   sending = true;
   try { if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(pkt); else await chr.writeValue(pkt); }
   catch(e){ /* dropped packet — the next one follows in 33 ms */ }
@@ -283,7 +326,8 @@ setInterval(async () => {
 function setNeutral(){
   if (!lastRaw || !current.hand){ msg("Hold your hand in view first."); return; }
   S.neutral = {...lastRaw}; save();
-  msg("Neutral saved. This hand position = plane centred and level.");
+  msg(S.mode === "gesture" ? "Neutral saved. Flat hand pointing at the camera = plane level. Point / tilt to fly, make a fist to stop."
+                           : "Neutral saved. This hand position = plane centred and level.");
 }
 async function keepAwake(){
   try { if ("wakeLock" in navigator){ wakeLock = await navigator.wakeLock.request("screen"); } } catch(e){}
@@ -295,6 +339,7 @@ $("btnConnect").onclick = connect;
 $("btnNeutral").onclick = setNeutral;
 $("selCam").onchange = e => { S.cam = e.target.value; S.mirror = S.cam === "user"; $("chkMirror").checked = S.mirror; applyMirror(); save(); if (stream) startCamera(); };
 $("selPlace").onchange = e => { S.place = e.target.value; save(); msg("Placement changed — tap “Set neutral” again."); };
+$("selMode").onchange = e => { S.mode = e.target.value; save(); msg("Mode changed — tap “Neutral” again."); };
 $("chkMirror").onchange = e => { S.mirror = e.target.checked; applyMirror(); save(); };
 $("btnHide").onclick = () => $("panel").classList.add("hidden");
 $("stage").onclick = () => $("panel").classList.toggle("hidden");
