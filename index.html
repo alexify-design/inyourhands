@@ -101,7 +101,7 @@ const LABEL = {pan:"Pan",lift:"Lift",roll:"Roll",pitch:"Pitch"};
 // ---------- settings (remembered on this phone) ----------
 const DEFAULTS = {cam:"user", place:"front", mode:"steady", v:2, mirror:true,
   gain:{pan:1, lift:1, roll:1, pitch:1}, inv:{pan:false, lift:false, roll:false, pitch:false},
-  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0, sPitch:0, sPan:0}};
+  neutral:{x:0.5, y:0.5, size:0.18, roll:0, pitch:0, gYaw:0, gPitch:0, gRoll:0, sPitch:0, sPan:0, tPitch:0}};
 let S = structuredClone(DEFAULTS);
 try { const saved = JSON.parse(localStorage.getItem("iyh-settings") || "null"); if (saved) S = {...S, ...saved, gain:{...S.gain,...saved.gain}, inv:{...S.inv,...saved.inv}, neutral:{...S.neutral,...saved.neutral}}; } catch(e){}
 S.mode = "steady"; S.place = "front";                 // one method only: Steady, phone in front
@@ -141,7 +141,7 @@ class OneEuro {
   reset(){ this.x = null; }
 }
 const filt = {x:new OneEuro(1.2,0.6), y:new OneEuro(1.2,0.6), size:new OneEuro(1,0.4), roll:new OneEuro(1,0.02), pitch:new OneEuro(1,0.02),
-  gYaw:new OneEuro(1,0.02), gPitch:new OneEuro(1,0.02), gRoll:new OneEuro(1,0.02), sPitch:new OneEuro(0.8,0.02), sPan:new OneEuro(0.8,0.02)};
+  gYaw:new OneEuro(1,0.02), gPitch:new OneEuro(1,0.02), gRoll:new OneEuro(1,0.02), sPitch:new OneEuro(0.8,0.02), sPan:new OneEuro(0.8,0.02), tPitch:new OneEuro(0.8,0.02)};
 
 // ---------- hand measurements ----------
 const sub = (a,b) => ({x:a.x-b.x, y:a.y-b.y, z:a.z-b.z});
@@ -189,7 +189,10 @@ function measure(lm, wl, hs){
   const sPitch = Math.atan2(-sdy, Math.abs(sdx)) * DEG;     // fingers up = +, down = -, works pointing left or right
   // ---- steady pan: fingers pointing left / right (sideways part of the finger direction) ----
   const sPan = Math.asin(Math.max(-1, Math.min(1, S.mirror ? -fn.x : fn.x))) * DEG;
-  return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, sPitch, sPan, open};
+  // ---- steady tilt: wrist -> index & middle FINGERTIPS, so bending the fingers up counts too ----
+  const tv = {x:(wl[8].x+wl[12].x)/2 - wl[0].x, y:(wl[8].y+wl[12].y)/2 - wl[0].y, z:(wl[8].z+wl[12].z)/2 - wl[0].z};
+  const tPitch = Math.asin(Math.max(-1, Math.min(1, -tv.y / (Math.hypot(tv.x, tv.y, tv.z) || 1)))) * DEG;
+  return {x, y, size, roll, pitch, gYaw, gPitch, gRoll, sPitch, sPan, tPitch, open};
 }
 
 // raw measurement -> -100..100 per axis
@@ -203,7 +206,7 @@ function toAxes(m){
     // STEADY: only what the camera sees well. pan & lift = hand position (%), tilt = finger angle (deg), roll = automatic on the ESP32
     out.pan   = (m.sPan - N.sPan) / 40 * 100;                // fingers point 40° left/right = full turn
     out.lift  = (N.y - m.y) / 0.30 * 100;
-    out.pitch = (m.gPitch - N.gPitch) * (S.flipT ? -1 : 1);                          // fingers up/down (degrees)
+    out.pitch = (m.tPitch - N.tPitch) * (S.flipT ? -1 : 1);                          // fingers up/down (degrees)
     out.roll  = 0;
   } else if (S.mode === "gesture"){
     // EXACT copy: values are degrees (1:1). The ESP32 moves each servo by the same number of degrees.
@@ -264,7 +267,7 @@ function loop(){
       const hs = hd && hd.categoryName === "Left" ? -1 : 1;
       const raw = measure(lm, wl, hs), t = now/1000;
       const m = {x:filt.x.f(raw.x,t), y:filt.y.f(raw.y,t), size:filt.size.f(raw.size,t), roll:filt.roll.f(raw.roll,t), pitch:filt.pitch.f(raw.pitch,t),
-                 gYaw:filt.gYaw.f(raw.gYaw,t), gPitch:filt.gPitch.f(raw.gPitch,t), gRoll:filt.gRoll.f(raw.gRoll,t), sPitch:filt.sPitch.f(raw.sPitch,t), sPan:filt.sPan.f(raw.sPan,t)};
+                 gYaw:filt.gYaw.f(raw.gYaw,t), gPitch:filt.gPitch.f(raw.gPitch,t), gRoll:filt.gRoll.f(raw.gRoll,t), sPitch:filt.sPitch.f(raw.sPitch,t), sPan:filt.sPan.f(raw.sPan,t), tPitch:filt.tPitch.f(raw.tPitch,t)};
       fist = fist ? raw.open < 1.45 : raw.open < 1.2;            // hysteresis: no flicker
       if (!fist) lastRaw = m;
       current = fist ? {...current, hand:true, stop:true} : {...toAxes(m), hand:true, stop:false};
